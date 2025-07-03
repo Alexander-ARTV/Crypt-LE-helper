@@ -19,7 +19,7 @@ The file takes a few parameters to allow for unnatended distribution using a cro
 - Renew (number) - Number of days to allow for renewal, defaults to 0
 - Unattended (switch) - Disables any request for user input, checks that all requirements to run are fulfilled and makes some well balanced decisions
 - KeepChallenges (switch) - In case you want to keep the challenge files created in the filesystem by Crypt-LE (./data/challenges) and the DNS TXT entries for manual inspection and deletion
-- AutoDistribute (switch) - Enables the automatic distribution feature available - make sure to setup and share SSH identities to the machine hosting the script to use this feature unattended, there is currently no graceful handling of for example passwort prompts
+- AutoDistribute (switch) - Enables the automatic distribution feature available - make sure to setup and share SSH identities to the machine hosting the script to use this feature unattended, there is currently no graceful handling of for example password prompts
 
 The script has been tested with Powershell 7.x under Ubuntu.
 
