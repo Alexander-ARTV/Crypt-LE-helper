@@ -1,13 +1,13 @@
-# File for automatic distribution to devices.
+# A file used for automatic distribution to devices.
 #
 # Lines starting with @ denotes file types to transfer,
 # file endings will be appended to the current certificate name 
 # by the script to specify which files to transfer.
 #
 # Lines containing a connection string will be used as a target
-# for the files constructed from the last file type specification.
+# for the files constructed from the last preceding file type specification.
 #
-# Lines starting with & are commands that will be ran,
+# Lines starting with & are commands that will be run,
 # typically to further load the certificates on targets or reload specific services.
 #
 # Make sure to setup and share SSH identities to be able to use unattended distribution.
