@@ -1,0 +1,25 @@
+services:
+  Crypt-LE:
+    configs:
+      - source: log
+        target: /log.conf
+    container_name: Crypt-LE
+# Please build and update the image below
+#    image: my_name:5000/crypt-le_custom
+    network_mode: bridge
+    pull_policy: always
+    restart: no
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+      - type: bind
+        source: ./webroot
+        target: /webroot
+      - type: bind
+        source: ./log
+        target: /log
+
+configs:
+  log:
+    file: ./log.conf
