@@ -3,7 +3,8 @@ param (
 	[int]$Renew = $False,
 	[switch]$Unattended,
 	[switch]$KeepChallenges,
-	[switch]$AutoDistribute
+	[switch]$AutoDistribute,
+	[switch]$KeepLogs
 )
 
 function Exit-Script {
@@ -28,6 +29,11 @@ function Test-Folders {
 		}
 	}
 	Return $True
+}
+
+function Clear-Logs {
+	$DateLimit = (Get-Date).AddDays(-180)
+	if (Test-Path $DirLog) {$DirLog | Get-ChildItem | Where-Object -FilterScript {Test-Path $_ -OlderThan $DateLimit} | Remove-Item}
 }
 
 function Start-Crypt-LE {
@@ -72,7 +78,7 @@ function Write-CloudflareIDs {
 			Return $False
 		}
 		if ($Null -ne $ResponseJSON.result.id) {$CloudflareIDs.Add($ResponseJSON.result.id)}
-		$Response | Out-File "$DirLog/cloudflare.txt" -Append
+		$Response | Out-File "$DirLog/$Date cloudflare.txt" -Append
 		if (!$KeepChallenges -or !$Live) {Remove-Item $_}
 	}
 	Return $True
@@ -89,7 +95,6 @@ function Clear-CloudflareIDs {
 	}
 	$CloudflareIDs.Clear()
 }
-
 
 function New-Certificate {
 	param (
@@ -148,8 +153,9 @@ $FileTargets = "$PSScriptRoot/targets.txt"
 $FileCompose = "$PSScriptRoot/compose.yaml"
 $CloudflareIDs = [System.Collections.Generic.List[string]]::new()
 $Folders = 'data', 'log', 'webroot', 'data/test', 'data/test/account_keys'
-
-if (!(Test-Path "$DirLog")) {$DirLog = $PSScriptRoot}
+$Date = Get-Date -Format 'yyyyMMdd'
+if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
+Clear-Logs
 Start-Transcript -OutputDirectory $DirLog
 
 if ($Unattended -and !$Domain) {Exit-Script "Domain must be set in unattended mode."}
@@ -166,7 +172,6 @@ if (!(Test-Path $FileSecrets)) {
 $Secrets = Get-Content $FileSecrets
 $CloudflareURL = $Secrets[0]
 $CloudflareAuth = $Secrets[1]
-if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
 $SkipTest = 'n'
 
 # Meat and potatoes
@@ -206,7 +211,7 @@ if ($SkipTest.ToLower() -ne 'y') {
 	if (!$Unattended) {Write-Output "Test successful, generating production certificate.`n"}
 }
 
-#$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
+$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
 if (!$KeepChallenges) {Clear-CloudflareIDs}
 if (!$CreateSuccess) {Exit-Script "Failed to get a production certificate."}
 
