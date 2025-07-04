@@ -1,10 +1,10 @@
 # Crypt-LE-helper
-A few auxiliary tools to help automate [Crypt-LE](https://github.com/do-know/Crypt-LE) certificate requests using DNS-verification with a two-pass method. This allows for creating your own method of supplying the challenge token(s) to your DNS provider before running Crypt LE a second time for verification.
+A few auxiliary tools to help automate [Crypt-LE](https://github.com/do-know/Crypt-LE) certificate requests using DNS-verification with a two-pass method. This allows for creating your own method of supplying the challenge token(s) to your DNS provider (Cloudflare supported OOB) before running Crypt LE a second time for verification.
 
 
 ## These are the included files and their functions
-- Dockerfile - Let's you build a custom image based on [my modified version of Crypt-LE](https://github.com/Alexander-ARTV/Crypt-LE/tree/resume),
-hopefully this will become obsolete soon when the functionality finds it's way into the original package.
+- Dockerfile - Let's you build a custom image based on [a modified version of Crypt-LE](https://github.com/Alexander-ARTV/Crypt-LE/tree/resume),
+hopefully this will become obsolete soon when the functionality finds it's way into the original package
 - compose.yaml - This compose-file creates the Crypt-LE container, edit this with the appropriate image name after building the image
 - generate_certs.ps1 - The main useful piece of software, this script handles everything from setting up a folder structure for the compose file, running Crypt-LE, performing DNS token registration, and it contains a simple way to distribute the created certificates using SSH/SCP
 - log.conf - Enable logging to file from Crypt-LE
