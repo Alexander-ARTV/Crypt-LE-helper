@@ -1,18 +1,30 @@
 param (
-	$Domain = $False,
+	[string]$Domain = $False,
 	[int]$Renew = $False,
 	[switch]$Unattended,
+	[switch]$TestOnly,
 	[switch]$KeepChallenges,
 	[switch]$AutoDistribute,
-	[switch]$KeepLogs
+	[switch]$KeepLogs,
+	[string]$EmailRecipient = $False,
+	[string]$EmailSender = $False,
+	[string]$EmailServer = $False
 )
 
 function Exit-Script {
 	param (
-		$Message
+		[string]$Message
 	)
+	if ($Unattended -and $EmailRecipient -and $EmailServer -and $EmailSender) {Send-Email $Message}
 	Write-Host $Message
 	Exit
+}
+
+function Send-Email {
+	param(
+		[string]$Message
+	)
+	Send-MailMessage -To $EmailRecipient -From $EmailSender -Subject "Crypt-LE certificate request status" -Body $Message -SmtpServer $EmailServer -Encoding ([System.Text.Encoding]::UTF8)
 }
 
 function Test-Folders {
@@ -32,23 +44,43 @@ function Test-Folders {
 }
 
 function Clear-Logs {
+	if ($KeepLogs) {Return}
 	$DateLimit = (Get-Date).AddDays(-180)
 	if (Test-Path $DirLog) {$DirLog | Get-ChildItem | Where-Object -FilterScript {Test-Path $_ -OlderThan $DateLimit} | Remove-Item}
 }
 
 function Start-Crypt-LE {
 	param (
-		$Domain,
-		$CertName,
-		$PathPrefix,
-		$Renew,
-		$Live,
-		$Pass
+		[string]$Domain,
+		[string]$CertName,
+		[string]$PathPrefix,
+		[string]$Renew,
+		[string]$Live,
+		[string]$Pass
 	)
 	$global:LASTEXITCODE = 0
 	Invoke-Expression "docker compose run -u $(id -u) --rm Crypt-LE -debug -log-config /log.conf -key .$PathPrefix/account_keys/$CertName.account.key -csr .$PathPrefix/$CertName.csr -csr-key .$PathPrefix/$CertName.key -crt .$PathPrefix/$CertName.crt -domains `"*.$Domain, $Domain`" -email tekniken@alandsradio.ax -handle-as dns -generate-missing $Renew $Live $Pass"
 	Write-Host "last exit code is $LASTEXITCODE"
 	Return ($LASTEXITCODE -eq 0 ? $True : $False)
+}
+
+function Test-Response {
+	param (
+		$Response
+	)
+	$Success = $False
+	if ($Null -eq $Response -or !($Response | Test-Json)) {Write-Host "ERROR: Connection issue when contacting Cloudflare."}
+	else {
+		$ResponseJSON = $Response | ConvertFrom-Json
+		if (!($ResponseJSON.success)) {Write-Host "ERROR: Cloudflare API call not successful."}
+		elseif ($Null -eq $ResponseJSON.result.id) {Write-Host "ERROR: Did not receive a result id."}
+		else {
+			$Success = $True
+			Write-Host "Success!"
+		}
+	}
+	Write-Host "Response: $Response`n"
+	Return $Success ? $ResponseJSON.result.id : $False
 }
 
 function Write-CloudflareIDs {
@@ -59,7 +91,7 @@ function Write-CloudflareIDs {
 		$Hostname = $content[0]
 		$Value = $content[1]
 		if (($Value -eq '') -or ($Hostname -eq '')) {
-			Write-Host "Missing information in challenge file $_, please check and re-run this script."
+			Write-Host "ERROR: Missing information in challenge file $_, please check and re-run this script."
 			Return $False
 		}
 		$Response = curl -X POST "$CloudflareURL"`
@@ -67,18 +99,12 @@ function Write-CloudflareIDs {
 			-H "Content-Type:application/json"`
 			-d "{`"comment`": `"Test`",`"content`": `"\`"$Value\`"`",`"name`": `"$Hostname`",`"proxied`": false,`"ttl`": 240,`"type`": `"TXT`"}"
 
-		if ($Null -eq $Response -or !($Response | Test-Json)) {
-			Write-Host "Connection issue when contacting Cloudflare."
+		$Result = Test-Response $Response
+		if (!$Result) {
+			Write-Host "Challenge files have not been deleted due to the error above, inspect and delete them manually."
 			Return $False
 		}
-		
-		$ResponseJSON = $Response | ConvertFrom-Json
-		if (!($ResponseJSON.success)) {
-			Write-Host "Failed to write the challenge post to Cloudflare."
-			Return $False
-		}
-		if ($Null -ne $ResponseJSON.result.id) {$CloudflareIDs.Add($ResponseJSON.result.id)}
-		$Response | Out-File "$DirLog/$Date cloudflare.txt" -Append
+		$CloudflareIDs.Add($Result)
 		if (!$KeepChallenges -or !$Live) {Remove-Item $_}
 	}
 	Return $True
@@ -91,18 +117,18 @@ function Clear-CloudflareIDs {
 		if (!$Unattended) {Read-Host "Removing DNS post with the following URL: $DeleteURL, confirm or exit"}
 		$Response = curl -X DELETE "$DeleteURL"`
 			-H "Authorization: $CloudflareAuth"
-		Write-Host $Response
+		Test-Response $Response
 	}
 	$CloudflareIDs.Clear()
 }
 
 function New-Certificate {
 	param (
-		$Domain,
-		$CertName,
-		$PathPrefix,
-		$Renew,
-		$Live
+		[string]$Domain,
+		[string]$CertName,
+		[string]$PathPrefix,
+		[string]$Renew,
+		[string]$Live
 	)
 
 	if (Test-Path "$DirData$PathPrefix/$CertName.crt") {
@@ -126,7 +152,7 @@ function New-Certificate {
 		Return $True
 	}
 
-	Write-Host "Writing challenges to Cloudflare for $CertName"
+	Write-Host "Writing challenge records to Cloudflare for $CertName"
 
 	if (!(Write-CloudflareIDs)) {Return $False}
 
@@ -185,7 +211,7 @@ The wrapper can perform a test round from the staging environment of Let's Encry
 "
 
 
-if ($Renew) {$Renew = "--Renew $Renew"}
+$Renew = $Renew ? "--Renew $Renew" : ''
 
 if (!$Unattended) {
 	while (!$Domain) {$Domain = Read-Host "Specify domain to use"}
@@ -200,19 +226,23 @@ Leave blank to use the value from the command line or issue certificate immediat
 
 $CertName = "star.$Domain"
 
-if ($SkipTest.ToLower() -ne 'y') {
+if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
 	if (!$Unattended) {Read-Host "Beware! All files in the subfolder $DirTest will be removed.`n"}
 	Get-ChildItem $DirTest -File -Recurse | Remove-Item
 	$CertName = "test.$Domain"
 	$PathPrefix = '/test'
 	$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew
+	Write-Host "Removing Cloudflare challenge records for $CertName"
 	Clear-CloudflareIDs
 	if (!$CreateSuccess) {Exit-Script "Creation of test certificate failed, did not attempt to create a production certificate."}
-	if (!$Unattended) {Write-Output "Test successful, generating production certificate.`n"}
+	if ($TestOnly) {Exit-Script "Test only was requested and successful."}
 }
 
 $CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
-if (!$KeepChallenges) {Clear-CloudflareIDs}
+if (!$KeepChallenges) {
+	Write-Host "Removing Cloudflare challenge records for $CertName"
+	Clear-CloudflareIDs
+}
 if (!$CreateSuccess) {Exit-Script "Failed to get a production certificate."}
 
 
@@ -248,3 +278,5 @@ if ($Continue -eq 'y' -or $AutoDistribute) {
 		Invoke-Expression "scp $CertificateFiles $Target"
 	}
 }
+
+Exit-Script "Certificate generation done!"
