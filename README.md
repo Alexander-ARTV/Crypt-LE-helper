@@ -16,8 +16,9 @@ This file can be used interactively or non-interactively to handle the entire ce
 The file takes a few parameters to allow for unnatended distribution using a cron job, or just for convenience when running the script manually. However, it is recommended to run the script manually the first time to test functionality and perform inital setup:
 
 - Domain (string)
-- Renew (number) - Number of days to allow for renewal, defaults to 0
+- RenewDays (number) - Number of days to allow for renewal, defaults to 0
 - Unattended (switch) - Disables any request for user input, checks that all requirements to run are fulfilled and makes some well balanced decisions
+- TestOnly (switch) - Only perform the test against the LE staging server
 - KeepChallenges (switch) - In case you want to keep the challenge files created in the filesystem by Crypt-LE (./data/challenges) and the DNS TXT entries for manual inspection and deletion
 - AutoDistribute (switch) - Enables the automatic distribution feature available - make sure to setup and share SSH identities to the machine hosting the script to use this feature unattended, there is currently no graceful handling of for example password prompts
 - KeepLogs (switch) - By default, old logs are cleaned after 180 days. Use this switch to suppress and keep logs forever

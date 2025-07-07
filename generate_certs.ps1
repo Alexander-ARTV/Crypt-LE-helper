@@ -1,6 +1,6 @@
 param (
 	[string]$Domain = $False,
-	[int]$Renew = $False,
+	[int]$RenewDays = $False,
 	[switch]$Unattended,
 	[switch]$TestOnly,
 	[switch]$KeepChallenges,
@@ -211,7 +211,7 @@ The wrapper can perform a test round from the staging environment of Let's Encry
 "
 
 
-$Renew = $Renew ? "--Renew $Renew" : ''
+$Renew = $RenewDays ? "--Renew $RenewDays" : ''
 
 if (!$Unattended) {
 	while (!$Domain) {$Domain = Read-Host "Specify domain to use"}
