@@ -1,5 +1,5 @@
 param (
-	[string]$Domain = $False,
+	[string]$Domain = '',
 	[int]$RenewDays = $False,
 	[switch]$Unattended,
 	[switch]$TestOnly,
@@ -179,12 +179,12 @@ $FileTargets = "$PSScriptRoot/targets.txt"
 $FileCompose = "$PSScriptRoot/compose.yaml"
 $CloudflareIDs = [System.Collections.Generic.List[string]]::new()
 $Folders = 'data', 'log', 'webroot', 'data/test', 'data/test/account_keys'
-$Date = Get-Date -Format 'yyyyMMdd'
 if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
 Clear-Logs
 Start-Transcript -OutputDirectory $DirLog
+Write-Host "User is $(id -u), make sure you always run this script as the same user to avoid permission issues, also in cron-jobs."
 
-if ($Unattended -and !$Domain) {Exit-Script "Domain must be set in unattended mode."}
+if ($Unattended -and (($Domain.GetType().FullName -ne 'System.String') -or ($Domain.length -lt 1))) {Exit-Script "Domain must be set in unattended mode."}
 
 if ((Get-Content $FileCompose) -match '^#\s*image') {Exit-Script "Please update compose.yaml with a usable docker image."}
 
@@ -210,11 +210,10 @@ The script can also perform basic automatic distribution of the created certific
 The wrapper can perform a test round from the staging environment of Let's Encrypt before attempting to get a production certificate.
 "
 
-
 $Renew = $RenewDays ? "--Renew $RenewDays" : ''
 
 if (!$Unattended) {
-	while (!$Domain) {$Domain = Read-Host "Specify domain to use"}
+	while (($Domain.GetType().FullName -ne 'System.String') -or ($Domain.length -lt 1)) {$Domain = Read-Host "Specify domain to use"}
 	$RenewChoice = Read-Host "
 If you want to renew a certificate, enter max number of days allowed until old cert expiry. 
 A new certificate will not be issued if the date is beyond this time window. 
@@ -224,7 +223,6 @@ Leave blank to use the value from the command line or issue certificate immediat
 	$SkipTest = Read-Host "Do you want to skip the test against the staging environment and attempt to get a production certificate immediately? (y/n)"
 }
 
-$CertName = "star.$Domain"
 
 if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
 	if (!$Unattended) {Read-Host "Beware! All files in the subfolder $DirTest will be removed.`n"}
@@ -237,6 +235,9 @@ if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
 	if (!$CreateSuccess) {Exit-Script "Creation of test certificate failed, did not attempt to create a production certificate."}
 	if ($TestOnly) {Exit-Script "Test only was requested and successful."}
 }
+
+$CertName = "star.$Domain"
+$PathPrefix = ''
 
 $CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
 if (!$KeepChallenges) {
