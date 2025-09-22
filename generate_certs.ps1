@@ -1,14 +1,15 @@
 param (
 	[string]$Domain = '',
-	[int]$RenewDays = $False,
+	[int]$RenewDays = 0,
 	[switch]$Unattended,
 	[switch]$TestOnly,
 	[switch]$KeepChallenges,
 	[switch]$AutoDistribute,
+	[switch]$DistributeOnly,
 	[switch]$KeepLogs,
-	[string]$EmailRecipient = $False,
-	[string]$EmailSender = $False,
-	[string]$EmailServer = $False
+	[string]$EmailRecipient = '',
+	[string]$EmailSender = '',
+	[string]$EmailServer = ''
 )
 
 function Exit-Script {
@@ -167,96 +168,8 @@ function New-Certificate {
 	Return $True
 }
 
-
-# Early setup
-
-$DirData = "$PSScriptRoot/data"
-$DirLog = "$PSScriptRoot/log"
-$DirChallenges = "$DirData/challenges"
-$DirTest = "$DirData/test"
-$FileSecrets = "$PSScriptRoot/secrets.txt"
-$FileTargets = "$PSScriptRoot/targets.txt"
-$FileCompose = "$PSScriptRoot/compose.yaml"
-$CloudflareIDs = [System.Collections.Generic.List[string]]::new()
-$Folders = 'data', 'log', 'webroot', 'data/test', 'data/test/account_keys'
-if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
-Clear-Logs
-Start-Transcript -OutputDirectory $DirLog
-Write-Host "User is $(id -u), make sure you always run this script as the same user to avoid permission issues, also in cron-jobs."
-
-if ($Unattended -and (($Domain.GetType().FullName -ne 'System.String') -or ($Domain.length -lt 1))) {Exit-Script "Domain must be set in unattended mode."}
-
-if ((Get-Content $FileCompose) -match '^#\s*image') {Exit-Script "Please update compose.yaml with a usable docker image."}
-
-if (!(Test-Path $FileSecrets)) {
-	if ($Unattended) {Exit-Script "Secrets file must be created before running this script unattended. Run this script again without the -Unattended-switch."}
-	Write-Output 'Cloudflare secrets file missing, please enter information for creation.'
-	$URL = Read-Host 'Enter URL (https://api.cloudflare.com/client/v4/zones/abcdef123456789.../dns_records)'
-	$Auth = Read-Host 'Enter Auth (Bearer xyz123...)'
-	$URL, $Auth | Out-File $FileSecrets;
-}
-$Secrets = Get-Content $FileSecrets
-$CloudflareURL = $Secrets[0]
-$CloudflareAuth = $Secrets[1]
-$SkipTest = 'n'
-
-# Meat and potatoes
-
-Write-Output "
-This is a wrapper script for Crypt LE with automatic DNS verification to Cloudflare. It will request a certificate for root and wildcard. 
-The script can also perform basic automatic distribution of the created certificates. Prerequisites:
-	-A Docker environment
-	-A Docker image with a custom version of Crypt LE with two pass capability (custom as of July 2025)
-The wrapper can perform a test round from the staging environment of Let's Encrypt before attempting to get a production certificate.
-"
-
-$Renew = $RenewDays ? "--Renew $RenewDays" : ''
-
-if (!$Unattended) {
-	while (($Domain.GetType().FullName -ne 'System.String') -or ($Domain.length -lt 1)) {$Domain = Read-Host "Specify domain to use"}
-	$RenewChoice = Read-Host "
-If you want to renew a certificate, enter max number of days allowed until old cert expiry. 
-A new certificate will not be issued if the date is beyond this time window. 
-Leave blank to use the value from the command line or issue certificate immediately if no value was given
-"
-	if ($RenewChoice) {$Renew = "--Renew $([int]$RenewChoice)"}
-	$SkipTest = Read-Host "Do you want to skip the test against the staging environment and attempt to get a production certificate immediately? (y/n)"
-}
-
-
-if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
-	if (!$Unattended) {Read-Host "Beware! All files in the subfolder $DirTest will be removed.`n"}
-	Get-ChildItem $DirTest -File -Recurse | Remove-Item
-	$CertName = "test.$Domain"
-	$PathPrefix = '/test'
-	$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew
-	Write-Host "Removing Cloudflare challenge records for $CertName"
-	Clear-CloudflareIDs
-	if (!$CreateSuccess) {Exit-Script "Creation of test certificate failed, did not attempt to create a production certificate."}
-	if ($TestOnly) {Exit-Script "Test only was requested and successful."}
-}
-
-$CertName = "star.$Domain"
-$PathPrefix = ''
-
-$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
-if (!$KeepChallenges) {
-	Write-Host "Removing Cloudflare challenge records for $CertName"
-	Clear-CloudflareIDs
-}
-if (!$CreateSuccess) {Exit-Script "Failed to get a production certificate."}
-
-
-# Automatic distribution
-
-if (!$Unattended) {$Continue = Read-Host 'Continue with automatic distribution? (y/n)'}
-if ($Continue -eq 'y' -or $AutoDistribute) {
-	Get-Content "$DirData/$CertName.key" | Out-File "$DirData/$CertName.full.pem"
-	Get-Content "$DirData/$CertName.crt" | Out-File -Append "$DirData/$CertName.full.pem"
-
-	openssl pkcs12 -export -legacy -keypbe NONE -certpbe NONE -passout pass: -inkey "$DirData/$CertName.key" -in "$DirData/$CertName.crt" -out "$DirData/$CertName.pfx" 
-
-	Write-Output "Done formatting certificates, continuing with distribution."
+function Start-Distribution {
+	$FileTargets = "$PSScriptRoot/targets.txt"
 	if (!(Test-Path $FileTargets)) {Exit-Script "$FileTargets is missing, copy targets_example.txt to targets.txt, read the comments and modify the content to use the automatic distribution feature."}
 	$Targets = Get-Content $FileTargets
 
@@ -265,6 +178,7 @@ if ($Continue -eq 'y' -or $AutoDistribute) {
 		if ($Target.StartsWith('@')) {
 			$Prefix = "$PSScriptRoot/data/$CertName"
 			$CertificateTypes = $Target.Substring(1) -Split ' '
+			$CertificateTypes | ForEach-Object {if (!(Test-Path ($Prefix + $_))) {Exit-Script "You are trying to distribute a file that does not exist: $($Prefix + $_)"}}
 			$CertificateFiles = "$Prefix$($certificateTypes -join " $Prefix")"
 			Write-Output "Files that will be copied: $CertificateFiles"
 			continue
@@ -278,6 +192,107 @@ if ($Continue -eq 'y' -or $AutoDistribute) {
 		Write-Output "Copying over scp: $CertificateFiles $Target"
 		Invoke-Expression "scp $CertificateFiles $Target"
 	}
+}
+
+
+# Early setup
+
+if ($Unattended -and ($Domain.length -lt 1)) {Exit-Script "Domain must be set in unattended mode."}
+
+$DirData = "$PSScriptRoot/data"
+$DirLog = "$PSScriptRoot/log"
+$DirChallenges = "$DirData/challenges"
+$DirTest = "$DirData/test"
+$FileSecrets = "$PSScriptRoot/secrets.txt"
+$FileCompose = "$PSScriptRoot/compose.yaml"
+$CloudflareIDs = [System.Collections.Generic.List[string]]::new()
+$Folders = 'data', 'log', 'webroot', 'data/test', 'data/test/account_keys'
+$SkipTest = 'n'
+$Renew = $RenewDays ? "--Renew $RenewDays" : ''
+$PathPrefix = ''
+if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
+Clear-Logs
+Start-Transcript -OutputDirectory $DirLog
+Write-Host "User ID is $(id -u), make sure you always run this script as the same user to avoid permission issues, also in cron-jobs."
+
+
+# Meat and potatoes
+
+Write-Output "
+This is a wrapper script for Crypt LE with automatic DNS verification to Cloudflare. It will request a certificate for root and wildcard. 
+The script can also perform basic automatic distribution of the created certificates. Prerequisites:
+	-A Docker environment
+	-A Docker image with a custom version of Crypt LE with two pass capability (custom as of July 2025)
+The wrapper can perform a test round from the staging environment of Let's Encrypt before attempting to get a production certificate.
+"
+
+if (!$Unattended) {while ($Domain.length -lt 1) {$Domain = Read-Host "Specify domain to use"}}
+
+$CertName = "star.$Domain"
+
+if ($DistributeOnly) {
+	Start-Distribution
+	Exit-Script "Completed the script in distribution-only mode."
+}
+
+if (!$Unattended) {
+	$RenewChoice = Read-Host "
+If you want to renew a certificate, enter max number of days allowed until old cert expiry. 
+A new certificate will not be issued if the date is beyond this time window. 
+Leave blank to use the value from the command line or issue certificate immediately if no value was given
+"
+	if ($RenewChoice) {$Renew = "--Renew $([int]$RenewChoice)"}
+	$SkipTest = Read-Host "Do you want to skip the test against the staging environment and attempt to get a production certificate immediately? (y/n)"
+}
+
+if ((Get-Content $FileCompose) -match '^#\s*image') {Exit-Script "Please update compose.yaml with a usable docker image."}
+
+if (!(Test-Path $FileSecrets)) {
+	if ($Unattended) {Exit-Script "Secrets file must be created before running this script unattended. Run this script again without the -Unattended-switch."}
+	Write-Output 'Cloudflare secrets file missing, please enter information for creation.'
+	$URL = Read-Host 'Enter URL (https://api.cloudflare.com/client/v4/zones/abcdef123456789.../dns_records)'
+	$Auth = Read-Host 'Enter Auth (Bearer xyz123...)'
+	$URL, $Auth | Out-File $FileSecrets;
+}
+$Secrets = Get-Content $FileSecrets
+$CloudflareURL = $Secrets[0]
+$CloudflareAuth = $Secrets[1]
+
+if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
+	if (!$Unattended) {Read-Host "Beware! All files in the subfolder $DirTest will be removed.`n"}
+	Get-ChildItem $DirTest -File -Recurse | Remove-Item
+	$TestCertName = "test.$Domain"
+	$TestPathPrefix = '/test'
+	$CreateSuccess = New-Certificate $Domain $TestCertName $TestPathPrefix $Renew
+	Write-Host "Removing Cloudflare challenge records for $TestCertName"
+	Clear-CloudflareIDs
+	if (!$CreateSuccess) {Exit-Script "Creation of test certificate failed, will not attempt to create a production certificate."}
+	if ($TestOnly) {Exit-Script "Test only was requested and successful."}
+}
+
+$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
+if (!$KeepChallenges) {
+	Write-Host "Removing Cloudflare challenge records for $CertName"
+	Clear-CloudflareIDs
+}
+if (!$CreateSuccess) {Exit-Script "Failed to get a production certificate."}
+
+
+#Post creation formatting
+
+Get-Content "$DirData/$CertName.key" | Out-File "$DirData/$CertName.full.pem"
+Get-Content "$DirData/$CertName.crt" | Out-File -Append "$DirData/$CertName.full.pem"
+
+openssl pkcs12 -export -legacy -keypbe NONE -certpbe NONE -passout pass: -inkey "$DirData/$CertName.key" -in "$DirData/$CertName.crt" -out "$DirData/$CertName.pfx" 
+
+Write-Output "Done formatting certificates, continuing with distribution."
+
+
+# Automatic distribution
+
+if (!$Unattended) {$Continue = Read-Host 'Continue with automatic distribution? (y/n)'}
+if ($Continue -eq 'y' -or $AutoDistribute) {
+	Start-Distribution
 }
 
 Exit-Script "Certificate generation done!"
