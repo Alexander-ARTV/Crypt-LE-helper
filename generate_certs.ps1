@@ -21,6 +21,16 @@ function Exit-Script {
 	Exit
 }
 
+function Test-Expiry {
+	param (
+		[string]$Path
+	)
+	if (!(Test-Path "$Path")) {Return $False}
+	$Cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::New((Convert-Path $Path))
+	$Today = Get-Date
+	Return ($Cert.NotAfter-$Today).Days
+}
+
 function Send-Email {
 	param(
 		[string]$Message
@@ -47,7 +57,7 @@ function Test-Folders {
 function Clear-Logs {
 	if ($KeepLogs) {Return}
 	$DateLimit = (Get-Date).AddDays(-180)
-	if (Test-Path $DirLog) {$DirLog | Get-ChildItem | Where-Object -FilterScript {Test-Path $_ -OlderThan $DateLimit} | Remove-Item}
+	if (Test-Path $DirLog) {$DirLog | Get-ChildItem | Where-Object -FilterScript {Test-Path $_ -OlderThan $DateLimit} | Remove-Item -Force}
 }
 
 function Start-Crypt-LE {
@@ -106,7 +116,7 @@ function Write-CloudflareIDs {
 			Return $False
 		}
 		$CloudflareIDs.Add($Result)
-		if (!$KeepChallenges -or !$Live) {Remove-Item $_}
+		if (!$KeepChallenges -or !$Live) {Remove-Item $_ -Force}
 	}
 	Return $True
 }
@@ -132,13 +142,15 @@ function New-Certificate {
 		[string]$Live
 	)
 
-	if (Test-Path "$DirData$PathPrefix/$CertName.crt") {
+	$CertPath = "$DirData$PathPrefix/$CertName.crt"
+
+	if (Test-Path $CertPath) {
 		if (!$Unattended) {
-			$Choice = Read-Host "Certificate $CertName.crt already exists, enter r to remove and continue, s to skip to certificate distribution (or run Crypt LE live in case we are in test mode), or nothing to exit"
+			$Choice = Read-Host "Certificate $CertName.crt already exists, enter c to continue, r to remove and continue (renew status will be checked against the live domain), s to skip to certificate distribution (or run Crypt LE live in case we are in test mode), or nothing to exit"
 			if ($Choice.ToLower() -eq 's') {Return $True}
-			if ($Choice.ToLower() -ne 'r') {Exit-Script}
+			if ($Choice.ToLower() -eq 'r') {Remove-Item $CertPath -Force}
+			if ($Choice.ToLower() -ne 'c') {Exit-Script}
 		}
-		Remove-Item "$DirData$PathPrefix/$CertName.crt"
 	}
 
 	Write-Host "Creating challenge in Crypt LE for $CertName"
@@ -148,7 +160,7 @@ function New-Certificate {
 		Return $False
 	}
 
-	if (Test-Path "$DirData$PathPrefix/$CertName.crt") {
+	if (Test-Path $CertPath) {
 		Write-Host 'The certificate could be created early, skipping the challenge and verification step.'
 		Return $True
 	}
@@ -202,14 +214,12 @@ if ($Unattended -and ($Domain.length -lt 1)) {Exit-Script "Domain must be set in
 $DirData = "$PSScriptRoot/data"
 $DirLog = "$PSScriptRoot/log"
 $DirChallenges = "$DirData/challenges"
-$DirTest = "$DirData/test"
 $FileSecrets = "$PSScriptRoot/secrets.txt"
 $FileCompose = "$PSScriptRoot/compose.yaml"
 $CloudflareIDs = [System.Collections.Generic.List[string]]::new()
 $Folders = 'data', 'log', 'webroot', 'data/test', 'data/test/account_keys'
 $SkipTest = 'n'
 $Renew = $RenewDays ? "--Renew $RenewDays" : ''
-$PathPrefix = ''
 if (!(Test-Folders $Folders)) {Exit-Script "Could not create needed folders, check permissions."}
 Clear-Logs
 Start-Transcript -OutputDirectory $DirLog
@@ -259,23 +269,27 @@ $CloudflareURL = $Secrets[0]
 $CloudflareAuth = $Secrets[1]
 
 if (($SkipTest.ToLower() -ne 'y') -or $TestOnly) {
-	if (!$Unattended) {Read-Host "Beware! All files in the subfolder $DirTest will be removed.`n"}
-	Get-ChildItem $DirTest -File -Recurse | Remove-Item
 	$TestCertName = "test.$Domain"
-	$TestPathPrefix = '/test'
-	$CreateSuccess = New-Certificate $Domain $TestCertName $TestPathPrefix $Renew
+	$CreateSuccess = New-Certificate $Domain $TestCertName '/test' $Renew
 	Write-Host "Removing Cloudflare challenge records for $TestCertName"
 	Clear-CloudflareIDs
-	if (!$CreateSuccess) {Exit-Script "Creation of test certificate failed, will not attempt to create a production certificate."}
+	if (!$CreateSuccess -and !$Unattended) {Exit-Script "Creation of test certificate failed, will not attempt to create a production certificate."}
 	if ($TestOnly) {Exit-Script "Test only was requested and successful."}
 }
 
-$CreateSuccess = New-Certificate $Domain $CertName $PathPrefix $Renew '-Live'
+$CreateSuccess = New-Certificate $Domain $CertName '' $Renew '-Live'
 if (!$KeepChallenges) {
 	Write-Host "Removing Cloudflare challenge records for $CertName"
 	Clear-CloudflareIDs
 }
-if (!$CreateSuccess) {Exit-Script "Failed to get a production certificate."}
+if (!$CreateSuccess) {
+	$Path = "$DirData/$CertName.crt"
+	$Expiry = Test-Expiry $Path
+	if ($Expiry -eq $False) {$Message = "WARNING! A new certificate was not created, expiry test could not find a certificate at path $Path."}
+	elseif ($Expiry -gt $RenewDays) {$Message = "A new certificate was not created, skipped because time to expiry is $Expiry days and the limit set for renewal is $RenewDays days"}
+	else {$Message = "WARNING! A new certificate was not created, the limit set for renewal is $RenewDays days and current certificate expires in $Expiry days."}
+	Exit-Script $Message
+}
 
 
 #Post creation formatting
