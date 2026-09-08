@@ -4,7 +4,7 @@ services:
       - source: log
         target: /log.conf
     container_name: Crypt-LE
-# Please build and update the image below
+# Build and update the image below
 #    image: my_name:5000/crypt-le_custom
     network_mode: bridge
     pull_policy: always

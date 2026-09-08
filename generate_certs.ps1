@@ -69,6 +69,16 @@ function Start-Crypt-LE {
 		[string]$Live,
 		[string]$Pass
 	)
+
+	$CertPath = "$DirData$PathPrefix/$CertName.crt.tmp"
+	$Expiry = Test-Expiry $CertPath
+
+	if (($False -ne $Expiry) -and ($Expiry -lt $RenewDays)) {
+		Write-Host "Expiry ($Expiry) past renew due date ($RenewDays), forcing certificate creation"
+		$Renew = ''
+	}
+	else {Write-Host "Not forcing certificate creation due to overdue renew date"}
+
 	$global:LASTEXITCODE = 0
 	Invoke-Expression "docker compose run -u $(id -u) --rm Crypt-LE -debug -log-config /log.conf -key .$PathPrefix/account_keys/$CertName.account.key -csr .$PathPrefix/$CertName.csr -csr-key .$PathPrefix/$CertName.key -crt .$PathPrefix/$CertName.crt -domains `"*.$Domain, $Domain`" -email tekniken@alandsradio.ax -handle-as dns -generate-missing $Renew $Live $Pass"
 	Write-Host "last exit code is $LASTEXITCODE"
@@ -151,32 +161,44 @@ function New-Certificate {
 			if ($Choice.ToLower() -eq 'r') {Remove-Item $CertPath -Force}
 			if ($Choice.ToLower() -ne 'c') {Exit-Script}
 		}
+		else {
+			Write-Host "Renaming existing certificate $CertPath to $CertPath.tmp"
+			Rename-Item $CertPath "$CertPath.tmp"
+		}
 	}
 
 	Write-Host "Creating challenge in Crypt LE for $CertName"
 
 	if (!(Start-Crypt-LE $Domain $CertName $PathPrefix $Renew $Live '--delayed')) {
 		Write-Host "Crypt LE failed to run, a certificate for $CertName has not been created."
+		if (Test-Path "$CertPath.tmp") {Rename-Item "$CertPath.tmp" $CertPath}
 		Return $False
 	}
 
 	if (Test-Path $CertPath) {
 		Write-Host 'The certificate could be created early, skipping the challenge and verification step.'
+		if (Test-Path "$CertPath.tmp") {Remove-Item "$CertPath.tmp" -Force}
 		Return $True
 	}
 
 	Write-Host "Writing challenge records to Cloudflare for $CertName"
 
-	if (!(Write-CloudflareIDs)) {Return $False}
+	if (!(Write-CloudflareIDs)) {		
+		if (Test-Path "$CertPath.tmp") {Rename-Item "$CertPath.tmp" $CertPath}
+		Return $False
+	}
 
-	Write-Host "Waiting for five seconds before starting the verification process of $CertName"
+	Write-Host "Waiting for ten seconds before starting the verification process of $CertName"
 	
-	Start-Sleep -Seconds 5
+	Start-Sleep -Seconds 10
 
 	if (!(Start-Crypt-LE $Domain $CertName $PathPrefix $Renew $Live '--resume')) {
 		Write-Host "Could not verify $Domain with Crypt LE. $CertName har NOT been created."
+		if (Test-Path "$CertPath.tmp") {Rename-Item "$CertPath.tmp" $CertPath}
 		Return $False
 	}
+	
+	if (Test-Path "$CertPath.tmp") {Remove-Item "$CertPath.tmp" -Force}
 	Return $True
 }
 
@@ -186,22 +208,22 @@ function Start-Distribution {
 	$Targets = Get-Content $FileTargets
 
 	foreach ($Target in $Targets) {
-		if ($Target.StartsWith('#') -or $Target -eq '') {continue}
+		if ($Target.StartsWith('#') -or $Target -eq '' -or $Target.Trim -eq ' ') {continue}
 		if ($Target.StartsWith('@')) {
 			$Prefix = "$PSScriptRoot/data/$CertName"
 			$CertificateTypes = $Target.Substring(1) -Split ' '
 			$CertificateTypes | ForEach-Object {if (!(Test-Path ($Prefix + $_))) {Exit-Script "You are trying to distribute a file that does not exist: $($Prefix + $_)"}}
 			$CertificateFiles = "$Prefix$($certificateTypes -join " $Prefix")"
-			Write-Output "Files that will be copied: $CertificateFiles"
+			Write-Host "Files that will be copied: $CertificateFiles"
 			continue
 		}
 		if ($Target.StartsWith('&')) {
 			$Command = $Target.Substring(1)
-			Write-Output "Running command: $Command"
+			Write-Host "Running command: $Command"
 			Invoke-Expression $Command
 			continue
 		}	
-		Write-Output "Copying over scp: $CertificateFiles $Target"
+		Write-Host "Copying over scp: $CertificateFiles $Target"
 		Invoke-Expression "scp $CertificateFiles $Target"
 	}
 }
@@ -255,6 +277,7 @@ Leave blank to use the value from the command line or issue certificate immediat
 	$SkipTest = Read-Host "Do you want to skip the test against the staging environment and attempt to get a production certificate immediately? (y/n)"
 }
 
+
 if ((Get-Content $FileCompose) -match '^#\s*image') {Exit-Script "Please update compose.yaml with a usable docker image."}
 
 if (!(Test-Path $FileSecrets)) {
@@ -287,7 +310,7 @@ if (!$CreateSuccess) {
 	$Expiry = Test-Expiry $Path
 	if ($Expiry -eq $False) {$Message = "WARNING! A new certificate was not created, expiry test could not find a certificate at path $Path."}
 	elseif ($Expiry -gt $RenewDays) {$Message = "A new certificate was not created, skipped because time to expiry is $Expiry days and the limit set for renewal is $RenewDays days"}
-	else {$Message = "WARNING! A new certificate was not created, the limit set for renewal is $RenewDays days and current certificate expires in $Expiry days."}
+	else {$Message = "WARNING! A new certificate was not created, the limit set for renewal is $RenewDays days but the current certificate expires in $Expiry days."}
 	Exit-Script $Message
 }
 
